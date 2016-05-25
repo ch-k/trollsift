@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from locale import format_string
 
 # Copyright (c) 2014, 2015
 
