@@ -3,7 +3,7 @@ import datetime as dt
 
 from trollsift.parser import _extract_parsedef, _extract_values
 from trollsift.parser import _convert, _collect_keyvals_from_parsedef
-from trollsift.parser import parse, globify, validate, is_one2one
+from trollsift.parser import parse, globify, validate, is_one2one, compose
 
 
 class TestParser(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestParser(unittest.TestCase):
 
     def test_extract_parsedef(self):
         # Run
-        result, dummy = _extract_parsedef(self.fmt)
+        result, dummy, _ = _extract_parsedef(self.fmt)
         # Assert
         self.assertItemsEqual(result,
                               ['/somedir/', {'directory': None},
@@ -173,6 +173,78 @@ class TestParser(unittest.TestCase):
                                       'segment': '000007',
                                       'start_time': dt.datetime(2015, 6, 5, 17, 0)})
 
+    def test_parse_time_with_timeslot_aligment(self):
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(5)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109171048-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 10, 0)})
+        
+        # Run
+        result = parse(filepattern, "TEST-MSG3-20150109170300-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 0, 0)})
+        
+        # Run
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 16, 55, 0)})
+
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 16, 45, 0)})
+        
+        
+        
+    def test_parse_time_with_timeslot_aligment_offsets(self):
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15,-2)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 0, 0)})
+        
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15,2)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109171600-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 0, 0)})
+        
+        
+    def test_parse_time_with_timeslot_aligment_intervals_add(self):
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15,0,1)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 00, 0)})
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15,0,2)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 15, 0)})
+        # Run
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(15,0,-1)}-"
+        result = parse(filepattern, "TEST-MSG3-20150109165900-")
+        # Assert
+        self.assertDictEqual(result, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 16, 30, 0)})
+
+    def test_compose_time_with_timeslot_aligment(self):
+        # Run
+#         filepattern = "TEST-{platform_name:4s}-{start_time!align(5):%Y%m%d%H%M%S}-"
+        filepattern = "TEST-{platform_name:4s}-{start_time:%Y%m%d%H%M%S|align(5)}-"
+        result = compose(filepattern, {'platform_name': 'MSG3',
+                                      'start_time': dt.datetime(2015, 1, 9, 17, 10, 48)})
+        # Assert
+        self.assertEqual(result, "TEST-MSG3-20150109171000-")
 
     def test_globify_simple(self):
         # Run

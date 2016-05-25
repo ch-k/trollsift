@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from locale import format_string
 
 # Copyright (c) 2014, 2015
 
@@ -94,23 +95,31 @@ def _extract_parsedef(fmt):
 
     parsedef = []
     convdef = {}
+    transformdef = {}
 
     for part1 in fmt.split('}'):
         part2 = part1.split('{', 1)
         if part2[0] is not '':
             parsedef.append(part2[0])
         if len(part2) > 1 and part2[1] is not '':
-            if ':' in part2[1]:
-                part2 = part2[1].split(':', 1)
-                parsedef.append({part2[0]: part2[1]})
-                convdef[part2[0]] = part2[1]
+            reg = re.search('(\\{' +
+                            part2[1].replace('(', '\\(').replace(')', '\\)') +
+                            '\\})', fmt)
+            if reg:
+                mtch = re.match('{(.*?)(!(.*?))?(\\:(.*?))?(\\|(.*?))?}',
+                                '{' + part2[1] + '}')
+                if mtch:
+                    key = mtch.groups()[0]
+                    format_spec = mtch.groups()[4]
+                    transform = mtch.groups()[6]
+                    parsedef.append({key: format_spec})
+                    if format_spec:
+                        convdef[key] = format_spec
+                    if transform:
+                        transformdef[key] = transform
             else:
-                reg = re.search('(\{' + part2[1] + '\})', fmt)
-                if reg:
-                    parsedef.append({part2[1]: None})
-                else:
-                    parsedef.append(part2[1])
-    return parsedef, convdef
+                parsedef.append(part2[1])
+    return parsedef, convdef, transformdef
 
 
 def _extract_values(parsedef, stri):
@@ -196,13 +205,13 @@ def _get_number_from_fmt(fmt):
         return int(re.search('[0-9]+', fmt).group(0))
 
 
-def _convert(convdef, stri):
+def _convert(convdef, stri, transform=None):
     '''Convert the string *stri* to the given conversion definition
     *convdef*.
     '''
 
     if '%' in convdef:
-        result = dt.datetime.strptime(stri, convdef)
+        result = _conv_datetime(stri, convdef, transform)
     elif 'd' in convdef or 's' in convdef:
         try:
             align = convdef[0]
@@ -253,10 +262,10 @@ def parse(fmt, stri):
     described in *fmt* string.
     '''
 
-    parsedef, convdef = _extract_parsedef(fmt)
+    parsedef, convdef, transformdef = _extract_parsedef(fmt)
     keyvals = _extract_values(parsedef, stri)
     for key in convdef.keys():
-        keyvals[key] = _convert(convdef[key], keyvals[key])
+        keyvals[key] = _convert(convdef[key], keyvals[key], transformdef.get(key,None))
 
     return keyvals
 
@@ -265,8 +274,32 @@ def compose(fmt, keyvals):
     '''Return string composed according to *fmt* string and filled
     with values with the corresponding keys in *keyvals* dictionary.
     '''
+    formatter = CustFormatter()
+    return formatter.format(fmt, **keyvals)
 
-    return fmt.format(**keyvals)
+
+class CustFormatter (string.Formatter):
+    "Defines special formatting"
+
+    def __init__(self):
+        super(CustFormatter, self).__init__()
+
+    def format_field(self, value, format_spec):
+        parts = format_spec.split('|')
+        if len(parts) > 1:
+            return self._format_field(value, parts[0], parts[1])
+        else:
+            return string.Formatter.format_field(self, value, parts[0])
+
+    def _format_field(self, value, format_spec, transform):
+        if transform:
+            params = _parse_align_time_transform(transform)
+            if params:
+                value = align_time(value,
+                                   dt.timedelta(minutes=params[0]),
+                                   dt.timedelta(minutes=params[1]),
+                                   params[2])
+        return string.Formatter.format_field(self, value, format_spec)
 
 
 DT_FMT = {
@@ -306,7 +339,7 @@ def globify(fmt, keyvals=None):
         keyvals = {}
     else:
         keyvals = keyvals.copy()
-    parsedef, _ = _extract_parsedef(fmt)
+    parsedef, _, _ = _extract_parsedef(fmt)
     all_keys, all_vals = _collect_keyvals_from_parsedef(parsedef)
     replace_str = ''
     for key, val in zip(all_keys, all_vals):
@@ -393,7 +426,7 @@ def is_one2one(fmt):
     losses when using  datetime data.
     """
     # look for some bad patterns
-    parsedef, _ = _extract_parsedef(fmt)
+    parsedef, _, _ = _extract_parsedef(fmt)
     free_size_start = False
     for x in parsedef:
         # encapsulatin free size keys,
@@ -459,3 +492,58 @@ def is_one2one(fmt):
             return False
     # all checks passed, so just return True
     return True
+
+
+def _conv_datetime(stri, convdef, transform):
+    """
+    Convert the string *stri* to the given datetime
+    conversion definition *convdef*.
+    Do some transformation of the parsed data when
+    *transform* is defined
+    """
+    result = dt.datetime.strptime(stri, convdef)
+    if transform:
+        params = _parse_align_time_transform(transform)
+        if params:
+            result = align_time(result,
+                                dt.timedelta(minutes=params[0]),
+                                dt.timedelta(minutes=params[1]),
+                                params[2])
+    return result
+
+
+def _parse_align_time_transform(transform_spec):
+    """
+    Parse the align-time transformation string
+    and returns *(steps, offset, intv_add)*
+    """
+    match = re.search('align\\((.*)\\)', transform_spec)
+    if match:
+        al_args = match.group(1).split(',')
+        steps = int(al_args[0])
+        if len(al_args) > 1:
+            offset = int(al_args[1])
+        else:
+            offset = 0
+        if len(al_args) > 2:
+            intv_add = int(al_args[2])
+        else:
+            intv_add = 0
+        return (steps, offset, intv_add)
+    else:
+        return None
+
+
+def align_time(input_val, steps=dt.timedelta(minutes=5),
+               offset=dt.timedelta(minutes=0), intervals_to_add=0):
+    """
+    Ceil/Round a datetime object to a multiple of a timedelta.
+    Useful to equalize small time differences in name of files
+    belonging to the same timeslot
+    """
+    stepss = steps.total_seconds()
+    val = input_val - offset
+    vals = (val - val.min).seconds
+    result = val - dt.timedelta(seconds=(vals - (vals // stepss) * stepss))
+    result = result + (intervals_to_add * steps)
+    return result
